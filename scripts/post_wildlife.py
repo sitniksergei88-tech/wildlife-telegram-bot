@@ -1,19 +1,43 @@
 #!/usr/bin/env python3
 import requests
 import os
-import json
 import time
 from telegram import Bot
 import asyncio
-import random
 
-# Configuration
-REDDIT_SUBREDDITS = ['wildlife', 'AnimalsBeingBros', 'NatureIsFuckingLit']
-PIKASU_URLS = [
-    'https://api.pikabu.ru/api/v2/feed/trending?page=1&sort=hot',
-    'https://api.pikabu.ru/api/v2/communities/feed?communities=animals&sort=hot&page=1'
+# ========== PEXELS API - ОСНОВНОЙ ИСТОЧНИК ==========
+# Бесплатный доступ: 200 запросов в час
+# Тысячи видео о животных в высоком качестве
+PEXELS_API_KEY = os.getenv('PEXELS_API_KEY', 'DUMMY_KEY')
+
+# Fallback видео если API не работает
+FALLBACK_VIDEOS = [
+    {
+        'url': 'https://videos.pexels.com/video-files/7451512/7451512-sd_640_360_30fps.mp4',
+        'title': '🦁 Лев в дикой природе',
+        'source': 'pexels'
+    },
+    {
+        'url': 'https://videos.pexels.com/video-files/6590210/6590210-sd_640_360_24fps.mp4',
+        'title': '🦓 Зебры в Африке',
+        'source': 'pexels'
+    },
+    {
+        'url': 'https://videos.pexels.com/video-files/6945871/6945871-sd_640_360_30fps.mp4',
+        'title': '🦘 Кенгуру в движении',
+        'source': 'pexels'
+    },
+    {
+        'url': 'https://videos.pexels.com/video-files/9021637/9021637-sd_640_360_24fps.mp4',
+        'title': '🐘 Слоны в саванне',
+        'source': 'pexels'
+    },
+    {
+        'url': 'https://videos.pexels.com/video-files/7988576/7988576-sd_640_360_24fps.mp4',
+        'title': '🦅 Орел в полете',
+        'source': 'pexels'
+    },
 ]
-VIDEO_LIMIT = 10  # Get more videos as fallback
 
 bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
 chat_id = os.getenv('TELEGRAM_CHAT_ID')
@@ -24,113 +48,76 @@ if not bot_token or not chat_id:
 
 bot = Bot(token=bot_token)
 
-def fetch_reddit_videos():
+def fetch_pexels_videos():
     """
-    Fetch wildlife videos from Reddit with better headers
+    Получить видео с Pexels API
     """
     videos = []
     
-    # Better headers to avoid Reddit blocking
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate',
-        'Connection': 'keep-alive',
-        'Referer': 'https://www.reddit.com/',
-    }
+    # Если нет API key, используем fallback
+    if PEXELS_API_KEY == 'DUMMY_KEY':
+        print("⚠ PEXELS_API_KEY не установлен, используем кэшированные видео")
+        return FALLBACK_VIDEOS[:3]
     
-    for subreddit in REDDIT_SUBREDDITS:
-        try:
-            url = f'https://www.reddit.com/r/{subreddit}/top.json?t=day&limit={VIDEO_LIMIT}'
-            response = requests.get(url, headers=headers, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            
-            print(f"✓ Successfully fetched r/{subreddit}")
-            
-            for post in data.get('data', {}).get('children', []):
-                post_data = post.get('data', {})
+    try:
+        headers = {'Authorization': PEXELS_API_KEY}
+        queries = ['wildlife', 'animals', 'nature', 'lion', 'elephant', 'safari']
+        
+        for query in queries:
+            try:
+                url = 'https://api.pexels.com/videos/search'
+                params = {
+                    'query': query,
+                    'per_page': 5,
+                    'min_duration': 10,
+                    'max_duration': 60
+                }
                 
-                # Skip if no media or video
-                if not post_data.get('media'):
-                    continue
+                response = requests.get(url, headers=headers, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
                 
-                try:
-                    video_url = post_data['media']['reddit_video']['fallback_url']
-                    title = post_data.get('title', 'Wildlife Video')
-                    upvotes = post_data.get('ups', 0)
-                    
-                    # Only include videos with engagement
-                    if upvotes > 20:
+                print(f"✓ Получено видео по запросу '{query}': {len(data.get('videos', []))} штук")
+                
+                for video in data.get('videos', []):
+                    video_files = video.get('video_files', [])
+                    if video_files:
+                        # Берем первый доступный файл
+                        video_url = video_files[0]['link']
                         videos.append({
                             'url': video_url,
-                            'title': title[:200],
-                            'subreddit': subreddit,
-                            'upvotes': upvotes,
-                            'source': 'reddit'
+                            'title': f"{query.title()} - видео #{len(videos)+1}",
+                            'source': 'pexels',
+                            'upvotes': 100
                         })
-                except (KeyError, TypeError):
-                    continue
-        
-        except requests.exceptions.RequestException as e:
-            print(f"⚠ Error fetching from r/{subreddit}: {e}")
-            continue
-        except Exception as e:
-            print(f"✗ Unexpected error from r/{subreddit}: {e}")
-            continue
+                
+                if len(videos) >= 5:
+                    break
+                    
+            except requests.exceptions.RequestException as e:
+                print(f"⚠ Ошибка запроса для '{query}': {e}")
+                continue
     
-    return videos
-
-def fetch_imgur_videos():
-    """
-    Fetch videos from Imgur as fallback
-    """
-    videos = []
-    try:
-        # Imgur doesn't require auth for public content
-        url = 'https://imgur.com/ajaxalbums/list/t/1/week/0?client_id=546c25a59c58ad7'
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        print(f"✓ Successfully fetched from Imgur")
-        
-        for item in data.get('data', [])[:10]:
-            if item.get('type') == 'video/mp4':
-                videos.append({
-                    'url': item.get('link'),
-                    'title': item.get('title', 'Imgur Video'),
-                    'subreddit': 'imgur',
-                    'upvotes': item.get('views', 0),
-                    'source': 'imgur'
-                })
     except Exception as e:
-        print(f"⚠ Error fetching from Imgur: {e}")
+        print(f"✗ Ошибка Pexels API: {e}")
     
     return videos
 
 async def post_to_telegram(videos):
     """
-    Post videos to Telegram channel
+    Отправить видео в Telegram
     """
     if not videos:
-        print("No videos found!")
+        print("✗ Нет видео для отправки!")
         return
     
-    # Shuffle and take top 3
-    random.shuffle(videos)
     posted_count = 0
     
-    for video in videos[:3]:
+    for video in videos[:3]:  # Отправляем максимум 3 видео
         try:
-            caption = f"🦁 {video['title']}\n\n📺 From: {video['source'].upper()}\n👍 Engagement: {video['upvotes']}"
+            caption = f"{video['title']}\n\n📺 Источник: {video['source'].upper()}\n👍 Рейтинг: {video['upvotes']}"
             
-            # Validate URL
-            if not video['url'].startswith('http'):
-                print(f"⚠ Skipping invalid URL")
-                continue
+            print(f"📤 Отправляю: {video['title'][:50]}...")
             
             await bot.send_video(
                 chat_id=chat_id,
@@ -142,33 +129,38 @@ async def post_to_telegram(videos):
             )
             
             posted_count += 1
-            print(f"✓ Posted: {video['title'][:50]}...")
-            time.sleep(2)  # Rate limiting
+            print(f"✓ Успешно отправлено!")
+            time.sleep(2)  # Rate limiting между видео
             
         except Exception as e:
-            print(f"⚠ Error posting video: {e}")
+            print(f"⚠ Ошибка отправки видео: {e}")
             continue
     
-    print(f"✓ Successfully posted {posted_count} videos!")
+    print(f"\n✓ Отправлено видео: {posted_count} шт!")
 
 async def main():
-    print("🦁 Fetching wildlife videos...\n")
+    print("\n🦁 Запуск Wildlife Telegram Bot\n")
+    print("="*50)
     
-    # Try Reddit first
-    videos = fetch_reddit_videos()
+    # Пытаемся получить видео с Pexels
+    print("\n📡 Подключение к Pexels API...")
+    videos = fetch_pexels_videos()
     
-    # If Reddit fails, try Imgur as fallback
+    # Если нет видео, используем fallback
     if not videos:
-        print("\n⚠ Reddit fetch failed, trying Imgur fallback...\n")
-        videos = fetch_imgur_videos()
+        print("\n⚠ Pexels API не подошел, используем кэшированные видео...")
+        videos = FALLBACK_VIDEOS
     
-    print(f"\nTotal videos found: {len(videos)}")
+    print(f"\n📊 Найдено видео: {len(videos)} шт")
     
     if videos:
-        print("\nPosting to Telegram...")
+        print("\n📤 Отправка в Telegram...\n")
         await post_to_telegram(videos)
     else:
-        print("✗ No suitable videos found from any source.")
+        print("✗ Не удалось получить видео из любых источников.")
+    
+    print("\n" + "="*50)
+    print("✓ Бот завершил работу\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
